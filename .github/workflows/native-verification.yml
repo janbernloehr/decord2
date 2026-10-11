@@ -52,9 +52,12 @@ jobs:
           "VENDOR=$vendor" >> $env:GITHUB_ENV
           Get-ChildItem $vendor -Recurse | Select-Object FullName,Length | Out-File "$env:STAGE/vendor-inventory.txt"
           Get-ChildItem "$vendor/bin/*.dll" | ForEach-Object { $_.LastWriteTime = Get-Date }
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
       - name: Build native CPU wheel and repair dependency closure
         run: |
-          cmake -S source -B source/build -G 'Visual Studio 18 2026' -A ARM64 -DUSE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release "-DFFMPEG_DIR=$env:VENDOR"
+          cmake -S source -B source/build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_TARGET=aarch64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=aarch64-pc-windows-msvc -DUSE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release "-DFFMPEG_DIR=$env:VENDOR"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build source/build --config Release --parallel 4
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
