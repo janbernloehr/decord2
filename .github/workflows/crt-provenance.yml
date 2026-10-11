@@ -22,7 +22,7 @@ jobs:
           $notices = @()
           foreach ($vs in $instances) {
             $root = $vs.installationPath
-            $dlls = Get-ChildItem "$root/VC/Redist" -Recurse -Filter msvcp140.dll -ErrorAction SilentlyContinue
+            $dlls = Get-ChildItem $root -Recurse -Filter msvcp140.dll -ErrorAction SilentlyContinue
             foreach ($dll in $dlls) {
               $hash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash.ToLower()
               $sig = Get-AuthenticodeSignature $dll.FullName
