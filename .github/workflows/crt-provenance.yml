@@ -1,0 +1,50 @@
+name: CRT binary correspondence - no binary publication
+on:
+  push:
+    branches: [ci/decord-provenance-20261012]
+permissions:
+  contents: read
+jobs:
+  crt:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover exact installed CRT evidence and notice paths
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP/crt-reports"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $instances = (& $vswhere -all -products '*' -format json) | ConvertFrom-Json
+          $instances | ConvertTo-Json -Depth 8 | Out-File "$out/vs-instances.json"
+          $rows = @()
+          $notices = @()
+          foreach ($vs in $instances) {
+            $root = $vs.installationPath
+            $dlls = Get-ChildItem "$root/VC/Redist" -Recurse -Filter msvcp140.dll -ErrorAction SilentlyContinue
+            foreach ($dll in $dlls) {
+              $hash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash.ToLower()
+              $sig = Get-AuthenticodeSignature $dll.FullName
+              $rows += [pscustomobject]@{path=$dll.FullName;version=$dll.VersionInfo.FileVersion;sha256=$hash;matchesOriginal=($hash -eq '7f6565a53bf892900ef225b28c922d882170c96c7278a26d83a3e4e5f5cc5c30');signatureStatus=[string]$sig.Status;signer=$sig.SignerCertificate.Subject}
+            }
+            foreach ($sub in @('Licenses','VC/Redist','Common7/IDE')) {
+              $files = Get-ChildItem "$root/$sub" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(redist|license|eula|third.?party|notice)' -and $_.Extension -match '\.(txt|rtf|html|htm)$' }
+              foreach ($f in $files) {
+                $notices += [pscustomobject]@{path=$f.FullName;sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower();size=$f.Length}
+                if ($f.Length -lt 2000000) { Copy-Item $f.FullName "$out/$($notices.Count)-$($f.Name)" }
+              }
+            }
+          }
+          $rows | ConvertTo-Json -Depth 6 | Out-File "$out/crt-matches.json"
+          $notices | ConvertTo-Json -Depth 6 | Out-File "$out/notice-paths.json"
+          $rows | Format-List
+          if (-not ($rows | Where-Object matchesOriginal)) { throw 'No exact original msvcp140 match: retain unresolved gate' }
+          'Binary provenance only. No legal clearance asserted; no binary uploaded.' | Out-File "$out/BOUNDARIES.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crt-provenance-reports-only
+          path: ${{ runner.temp }}/crt-reports
+          if-no-files-found: error
+          retention-days: 14
