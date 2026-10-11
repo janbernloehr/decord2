@@ -36,6 +36,15 @@ jobs:
               }
             }
           }
+          foreach ($candidate in @("$env:windir/System32/msvcp140.dll", "$env:windir/SysWOW64/msvcp140.dll")) {
+            if (Test-Path $candidate) {
+              $dll = Get-Item $candidate
+              $hash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLower()
+              $sig = Get-AuthenticodeSignature $candidate
+              $rows += [pscustomobject]@{path=$candidate;version=$dll.VersionInfo.FileVersion;sha256=$hash;matchesOriginal=($hash -eq '7f6565a53bf892900ef225b28c922d882170c96c7278a26d83a3e4e5f5cc5c30');signatureStatus=[string]$sig.Status;signer=$sig.SignerCertificate.Subject}
+            }
+          }
+          Get-ItemProperty 'HKLM:/SOFTWARE/Microsoft/Windows/CurrentVersion/Uninstall/*', 'HKLM:/SOFTWARE/WOW6432Node/Microsoft/Windows/CurrentVersion/Uninstall/*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*Visual C++*' } | Select-Object DisplayName,DisplayVersion,Publisher | ConvertTo-Json | Out-File "$out/installed-redists.json"
           $rows | ConvertTo-Json -Depth 6 | Out-File "$out/crt-matches.json"
           $notices | ConvertTo-Json -Depth 6 | Out-File "$out/notice-paths.json"
           $rows | Format-List
