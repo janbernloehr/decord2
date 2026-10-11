@@ -1,0 +1,94 @@
+name: Native Windows ARM64 CP312 CPU verification
+on:
+  push:
+    branches: [ci/native-winarm64-cp312-video-20261011]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-11-arm
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TEST_PACKAGE: decord2
+      TEST_VERSION: 3.4.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          repository: johnnynunez/decord2
+          ref: 1b4cfbd5d2964d411341ccf252051e516845430e
+          path: source
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Verify source and initialize isolated paths
+        run: |
+          if ((git -C source rev-parse HEAD) -ne '1b4cfbd5d2964d411341ccf252051e516845430e') { throw 'source SHA mismatch' }
+          $stage = "$env:RUNNER_TEMP/video-evidence"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          "STAGE=$stage" >> $env:GITHUB_ENV
+          "PIP_CACHE_DIR=$env:RUNNER_TEMP/pip-cache" >> $env:GITHUB_ENV
+          git -C source submodule status --recursive | Out-File "$stage/submodules.txt"
+          python -c "import sys,sysconfig; assert sys.version_info[:2] == (3,12); assert sysconfig.get_platform() == 'win-arm64'"
+          python -m pip install build setuptools wheel numpy==2.3.2 pytest delvewheel cmake==4.2.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Fetch exact upstream FFmpeg dependency and verify hash
+        run: |
+          $vendor = "$env:RUNNER_TEMP/ffmpeg-vendor"
+          New-Item -ItemType Directory -Force $vendor | Out-Null
+          $archive = "$env:STAGE/ffmpeg-windows-aarch64.tar.gz"
+          Invoke-WebRequest https://github.com/PyAV-Org/pyav-ffmpeg/releases/download/8.1.1-1/ffmpeg-windows-aarch64.tar.gz -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne '5f678fe9b6f14f55f3ff0fd03e772c0342a1fbae1ef4384acec32dd923dd7ebe') { throw 'vendor hash mismatch' }
+          tar -C $vendor -xf $archive
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "VENDOR=$vendor" >> $env:GITHUB_ENV
+          Get-ChildItem $vendor -Recurse | Select-Object FullName,Length | Out-File "$env:STAGE/vendor-inventory.txt"
+          Get-ChildItem "$vendor/bin/*.dll" | ForEach-Object { $_.LastWriteTime = Get-Date }
+      - name: Build native CPU wheel and repair dependency closure
+        run: |
+          cmake -S source -B source/build -G 'Visual Studio 18 2026' -A ARM64 -DUSE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release "-DFFMPEG_DIR=$env:VENDOR"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build source/build --config Release --parallel 4
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Push-Location source/python
+          python setup.py bdist_wheel --dist-dir "$env:STAGE/unrepaired"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Pop-Location
+          $wheel = (Get-ChildItem "$env:STAGE/unrepaired/*.whl").FullName
+          python -m delvewheel repair --analyze-existing --add-path "$env:VENDOR/bin" -w "$env:STAGE/wheels" $wheel
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item source/LICENSE "$env:STAGE/decord-LICENSE"
+          Copy-Item source/scripts/ffmpeg-8.1.json "$env:STAGE/ffmpeg-source-pin.json"
+      - name: Audit wheel hashes RECORD and PE
+        id: audit
+        run: |
+          $wheel = (Get-ChildItem "$env:STAGE/wheels/*.whl").FullName
+          python harness/.ci-native/audit_wheel.py $wheel "$env:STAGE/wheel-audit.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Fresh installed wheel CPU video tests
+        if: ${{ !cancelled() && steps.audit.outcome != 'skipped' }}
+        run: |
+          python -m venv "$env:RUNNER_TEMP/test-env"
+          $py = "$env:RUNNER_TEMP/test-env/Scripts/python.exe"
+          & $py -m pip install pytest numpy==2.3.2 (Get-ChildItem "$env:STAGE/wheels/*.whl").FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item harness/.ci-native/test_native.py "$env:STAGE/test_native.py"
+          Set-Location $env:STAGE
+          & $py -m pytest test_native.py -v -s --junitxml=tests.xml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Upload evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decord2-winarm64-cp312-evidence
+          path: ${{ env.STAGE }}
+          if-no-files-found: error
+          retention-days: 14
