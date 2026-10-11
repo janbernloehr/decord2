@@ -61,6 +61,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build source/build --config Release --parallel 4
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item source/LICENSE source/python/LICENSE
           Push-Location source/python
           python setup.py bdist_wheel --dist-dir "$env:STAGE/unrepaired"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -84,6 +85,8 @@ jobs:
           & $py -m pip install pytest numpy==2.3.2 (Get-ChildItem "$env:STAGE/wheels/*.whl").FullName
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Copy-Item harness/.ci-native/test_native.py "$env:STAGE/test_native.py"
+          Copy-Item harness/.ci-native/known-rgb-h264.mp4 $env:STAGE
+          Copy-Item harness/.ci-native/fixture-provenance.json $env:STAGE
           Set-Location $env:STAGE
           & $py -m pytest test_native.py -v -s --junitxml=tests.xml
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

@@ -142,3 +142,20 @@ def test_decord_video_frame_cadence_seek_and_memory(tmp_path):
             np.testing.assert_array_equal(decoded, np.zeros_like(decoded))
     with pytest.raises(Exception):
         decord.VideoReader(io.BytesIO(b'not a video'), ctx=decord.cpu(0))
+
+
+@pytest.mark.skipif(PACKAGE != 'decord2', reason='other package lane')
+def test_decord_lossless_h264_rgb_fixture():
+    import decord
+    data = (Path(__file__).parent / 'known-rgb-h264.mp4').read_bytes()
+    expected = np.stack([np.broadcast_to(np.array([i * 17, 255 - i * 13, i * 23], np.uint8), (48, 64, 3)) for i in range(12)])
+    for source in (str(Path(__file__).parent / 'known-rgb-h264.mp4'), io.BytesIO(data)):
+        reader = decord.VideoReader(source, ctx=decord.cpu(0), num_threads=1)
+        assert len(reader) == 12
+        assert abs(reader.get_avg_fps() - 12) < 1e-6
+        np.testing.assert_array_equal(reader.get_batch(range(12)).asnumpy(), expected)
+        np.testing.assert_array_equal(reader.get_batch([11, 0, 7, 7]).asnumpy(), expected[[11, 0, 7, 7]])
+        np.testing.assert_allclose(reader.get_frame_timestamp(range(12))[:, 0], np.arange(12) / 12, atol=1e-6)
+        held = reader[4]
+        del reader
+        np.testing.assert_array_equal(held.asnumpy(), expected[4])
