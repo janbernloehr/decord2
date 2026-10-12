@@ -1,0 +1,135 @@
+name: Clean pinned FFmpeg and Decord CPU native - reports only
+on:
+  push:
+    branches: [ci/clean-decord-lgpl-native-20261012]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TEST_PACKAGE: decord2
+      TEST_VERSION: 3.4.0+cleanlgpl.1
+      DECORD_LOCAL_VERSION_SUFFIX: cleanlgpl.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          repository: johnnynunez/decord2
+          ref: 1b4cfbd5d2964d411341ccf252051e516845430e
+          path: source
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Verify pristine pinned source and isolated paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git -C source rev-parse HEAD) -ne '1b4cfbd5d2964d411341ccf252051e516845430e') { throw 'source SHA mismatch' }
+          $reports = "$env:RUNNER_TEMP/clean-reports"
+          $work = "$env:RUNNER_TEMP/clean-work"
+          New-Item -ItemType Directory -Force $reports,$work,ffmpeg | Out-Null
+          "REPORTS=$reports" >> $env:GITHUB_ENV
+          "WORK=$work" >> $env:GITHUB_ENV
+          "PIP_CACHE_DIR=$work/pip-cache" >> $env:GITHUB_ENV
+          git -C source submodule status --recursive | Out-File "$reports/submodules.txt"
+          Invoke-WebRequest https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz -OutFile "$work/ffmpeg-8.1.1.tar.xz"
+          if ((Get-FileHash "$work/ffmpeg-8.1.1.tar.xz" -Algorithm SHA256).Hash.ToLower() -ne 'b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3') { throw 'FFmpeg source SHA256 mismatch' }
+          tar -xf "$work/ffmpeg-8.1.1.tar.xz" -C ffmpeg --strip-components=1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item ffmpeg/COPYING* $reports
+          Copy-Item ffmpeg/LICENSE.md "$reports/ffmpeg-LICENSE.md"
+          Copy-Item harness/.ci-clean/BUILD-NOTES.md $reports
+          python -c "import sys,sysconfig; assert sys.version_info[:2]==(3,12); assert sysconfig.get_platform()=='win-arm64'"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip install setuptools==82.0.1 wheel==0.46.3 numpy==2.3.2 pytest==9.1.1 pefile==2024.8.26 cmake==4.2.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: false
+          cache: false
+          path-type: inherit
+          install: make diffutils pkgconf
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Build stock LGPL decoder dependencies from source
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          prefix="$(cygpath -m "$WORK/ffmpeg-install")"
+          cd ffmpeg
+          ./configure --prefix="$prefix" --toolchain=msvc --arch=aarch64 --target-os=win64 --disable-asm --disable-doc --disable-debug --disable-autodetect --disable-gpl --disable-version3 --disable-nonfree --enable-shared --disable-static --disable-encoders --disable-muxers --disable-devices --disable-hwaccels --enable-network --enable-schannel --disable-ffplay
+          make -j4
+          make install
+      - name: Record actual compiled surface and compiler
+        run: |
+          cl 2>&1 | Out-File "$env:REPORTS/msvc.txt"
+          clang-cl --version | Out-File "$env:REPORTS/clang.txt"
+          foreach ($kind in @('version','buildconf','license','encoders','decoders','demuxers','muxers','protocols','filters','hwaccels')) {
+            & "$env:WORK/ffmpeg-install/bin/ffmpeg.exe" "-$kind" 2>&1 | Out-File "$env:REPORTS/ffmpeg-$kind.txt"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          python -c "from pathlib import Path; c=Path('ffmpeg/config.h').read_text(); assert '#define CONFIG_GPL 0' in c and '#define CONFIG_NONFREE 0' in c and '#define CONFIG_VERSION3 0' in c; assert '#define CONFIG_LIBX264 0' in c and '#define CONFIG_LIBX265 0' in c"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Rebuild unchanged clang-cl Decord and local-version wheel
+        run: |
+          cmake -S source -B source/build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_TARGET=aarch64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=aarch64-pc-windows-msvc -DUSE_CUDA=OFF -DUSE_VIDEOTOOLBOX=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "-DFFMPEG_DIR=$env:WORK/ffmpeg-install"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build source/build --config Release --parallel 4
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C source diff --exit-code
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item source/LICENSE source/python/LICENSE
+          Push-Location source/python
+          python setup.py bdist_wheel --dist-dir "$env:WORK/unrepaired"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Pop-Location
+          python harness/.ci-clean/stage_wheel.py source ffmpeg "$env:WORK/ffmpeg-install" $env:WORK $env:REPORTS harness
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: RECORD PE and import closure audit
+        id: audit
+        run: |
+          $wheel = (Get-ChildItem "$env:WORK/wheels/*.whl").FullName
+          python harness/.ci-clean/audit_wheel.py $wheel "$env:REPORTS/wheel-audit.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python harness/.ci-clean/audit_chain.py $wheel "$env:REPORTS/chain-audit.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Fresh installed original AVI H264 cadence seek lifetime tests
+        if: ${{ !cancelled() && steps.audit.outcome != 'skipped' }}
+        run: |
+          python -m venv "$env:WORK/test-env"
+          $py = "$env:WORK/test-env/Scripts/python.exe"
+          & $py -m pip install pytest==9.1.1 numpy==2.3.2 (Get-ChildItem "$env:WORK/wheels/*.whl").FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item harness/.ci-clean/test_native.py,harness/.ci-clean/known-rgb-h264.mp4,harness/.ci-clean/fixture-provenance.json $env:REPORTS
+          # Remove toolchain/MSYS/source dependency search paths for acceptance.
+          $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
+          Set-Location $env:REPORTS
+          & $py -m pytest test_native.py -v -s -k 'native_interpreter or decord' --junitxml=tests.xml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $py -c "import ctypes,json,pathlib,decord; from ctypes import wintypes; k=ctypes.WinDLL('kernel32',use_last_error=True); k.GetModuleHandleW.argtypes=[wintypes.LPCWSTR]; k.GetModuleHandleW.restype=wintypes.HMODULE; k.GetModuleFileNameW.argtypes=[wintypes.HMODULE,wintypes.LPWSTR,wintypes.DWORD]; r={}; names=['msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','ucrtbase.dll']; [(r.update({n:str(b.value)})) for n in names if (h:=k.GetModuleHandleW(n)) and (b:=ctypes.create_unicode_buffer(32768)) and k.GetModuleFileNameW(h,b,len(b))]; pathlib.Path('loaded-crt.json').write_text(json.dumps(r,indent=2)); print(r)"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Preserve text configuration only
+        if: always()
+        run: |
+          foreach ($entry in @(@('ffmpeg/ffbuild/config.log','ffmpeg-config.log'),@('ffmpeg/ffbuild/config.mak','ffmpeg-config.mak'),@('ffmpeg/config.h','ffmpeg-config.h'),@('source/build/compile_commands.json','compile_commands.json'),@('source/build/CMakeCache.txt','CMakeCache.txt'))) {
+            if (Test-Path $entry[0]) { Copy-Item $entry[0] "$env:REPORTS/$($entry[1])" }
+          }
+          # Never upload executable, wheel, DLL, source fixture or binary archives.
+          Get-ChildItem $env:REPORTS -Recurse -File | Where-Object { $_.Extension -in @('.mp4','.exe','.dll','.whl','.lib','.obj','.zip','.xz') } | Remove-Item
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clean-decord-native-reports-only
+          path: ${{ env.REPORTS }}
+          if-no-files-found: error
+          retention-days: 14
