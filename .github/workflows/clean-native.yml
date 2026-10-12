@@ -94,6 +94,16 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Rebuild unchanged clang-cl Decord and local-version wheel
         run: |
+          # Stock MSVC FFmpeg installs import libraries in SHLIBDIR/bin;
+          # Decord's unchanged finder expects the vendor-style lib directory.
+          $imports = @('avformat','avfilter','avcodec','avutil','avdevice','swscale','swresample')
+          foreach ($name in $imports) {
+            $from = "$env:WORK/ffmpeg-install/bin/$name.lib"
+            if (!(Test-Path $from)) { throw "Missing stock import library: $from" }
+            Copy-Item $from "$env:WORK/ffmpeg-install/lib/$name.lib"
+            if ((Get-FileHash $from).Hash -ne (Get-FileHash "$env:WORK/ffmpeg-install/lib/$name.lib").Hash) { throw 'Import-library staging changed bytes' }
+          }
+          Get-ChildItem "$env:WORK/ffmpeg-install/bin","$env:WORK/ffmpeg-install/lib" -File | Get-FileHash -Algorithm SHA256 | ConvertTo-Json | Out-File "$env:REPORTS/ffmpeg-install-layout.json"
           cmake -S source -B source/build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_TARGET=aarch64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=aarch64-pc-windows-msvc -DUSE_CUDA=OFF -DUSE_VIDEOTOOLBOX=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DCMAKE_SHARED_LINKER_FLAGS=/MAP -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "-DFFMPEG_DIR=$env:WORK/ffmpeg-install"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build source/build --config Release --parallel 4
