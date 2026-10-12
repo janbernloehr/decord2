@@ -67,7 +67,7 @@ jobs:
           set -euo pipefail
           prefix="$(cygpath -m "$WORK/ffmpeg-install")"
           cd ffmpeg
-          ./configure --prefix="$prefix" --toolchain=msvc --arch=aarch64 --target-os=win64 --disable-asm --disable-doc --disable-debug --disable-autodetect --disable-gpl --disable-version3 --disable-nonfree --enable-shared --disable-static --disable-encoders --disable-muxers --disable-devices --disable-hwaccels --enable-network --enable-schannel --disable-ffplay
+          ./configure --prefix="$prefix" --toolchain=msvc --extra-cflags=-MD --extra-cxxflags=-MD --arch=aarch64 --target-os=win64 --disable-asm --disable-doc --disable-debug --disable-autodetect --disable-gpl --disable-version3 --disable-nonfree --enable-shared --disable-static --disable-encoders --disable-muxers --disable-devices --disable-hwaccels --enable-network --enable-schannel --disable-ffplay
           make -j4
           make install
       - name: Record actual compiled surface and compiler
@@ -80,9 +80,20 @@ jobs:
           }
           python -c "from pathlib import Path; c=Path('ffmpeg/config.h').read_text(); assert '#define CONFIG_GPL 0' in c and '#define CONFIG_NONFREE 0' in c and '#define CONFIG_VERSION3 0' in c; assert '#define CONFIG_LIBX264 0' in c and '#define CONFIG_LIBX265 0' in c"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Native compiled surface comparison against original vendor
+        run: |
+          python harness/.ci-clean/surface.py "$env:WORK/ffmpeg-install/bin" "$env:REPORTS/clean-surface.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force "$env:WORK/vendor-reference" | Out-Null
+          Invoke-WebRequest https://github.com/PyAV-Org/pyav-ffmpeg/releases/download/8.1.1-1/ffmpeg-windows-aarch64.tar.gz -OutFile "$env:WORK/vendor-reference.tar.gz"
+          if ((Get-FileHash "$env:WORK/vendor-reference.tar.gz" -Algorithm SHA256).Hash.ToLower() -ne '5f678fe9b6f14f55f3ff0fd03e772c0342a1fbae1ef4384acec32dd923dd7ebe') { throw 'reference SHA mismatch' }
+          tar -xf "$env:WORK/vendor-reference.tar.gz" -C "$env:WORK/vendor-reference"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python harness/.ci-clean/surface.py "$env:WORK/vendor-reference/bin" "$env:REPORTS/vendor-surface.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Rebuild unchanged clang-cl Decord and local-version wheel
         run: |
-          cmake -S source -B source/build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_TARGET=aarch64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=aarch64-pc-windows-msvc -DUSE_CUDA=OFF -DUSE_VIDEOTOOLBOX=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "-DFFMPEG_DIR=$env:WORK/ffmpeg-install"
+          cmake -S source -B source/build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_TARGET=aarch64-pc-windows-msvc -DCMAKE_CXX_COMPILER_TARGET=aarch64-pc-windows-msvc -DUSE_CUDA=OFF -DUSE_VIDEOTOOLBOX=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DCMAKE_SHARED_LINKER_FLAGS=/MAP -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "-DFFMPEG_DIR=$env:WORK/ffmpeg-install"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build source/build --config Release --parallel 4
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -110,18 +121,18 @@ jobs:
           $py = "$env:WORK/test-env/Scripts/python.exe"
           & $py -m pip install pytest==9.1.1 numpy==2.3.2 (Get-ChildItem "$env:WORK/wheels/*.whl").FullName
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Copy-Item harness/.ci-clean/test_native.py,harness/.ci-clean/known-rgb-h264.mp4,harness/.ci-clean/fixture-provenance.json $env:REPORTS
+          Copy-Item harness/.ci-clean/test_native.py,harness/.ci-clean/test_extra.py,harness/.ci-clean/known-rgb-h264.mp4,harness/.ci-clean/fixture-provenance.json $env:REPORTS
           # Remove toolchain/MSYS/source dependency search paths for acceptance.
           $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
           Set-Location $env:REPORTS
-          & $py -m pytest test_native.py -v -s -k 'native_interpreter or decord' --junitxml=tests.xml
+          & $py -m pytest test_native.py test_extra.py -v -s -k 'native_interpreter or decord' --junitxml=tests.xml
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $py -c "import ctypes,json,pathlib,decord; from ctypes import wintypes; k=ctypes.WinDLL('kernel32',use_last_error=True); k.GetModuleHandleW.argtypes=[wintypes.LPCWSTR]; k.GetModuleHandleW.restype=wintypes.HMODULE; k.GetModuleFileNameW.argtypes=[wintypes.HMODULE,wintypes.LPWSTR,wintypes.DWORD]; r={}; names=['msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','ucrtbase.dll']; [(r.update({n:str(b.value)})) for n in names if (h:=k.GetModuleHandleW(n)) and (b:=ctypes.create_unicode_buffer(32768)) and k.GetModuleFileNameW(h,b,len(b))]; pathlib.Path('loaded-crt.json').write_text(json.dumps(r,indent=2)); print(r)"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Preserve text configuration only
         if: always()
         run: |
-          foreach ($entry in @(@('ffmpeg/ffbuild/config.log','ffmpeg-config.log'),@('ffmpeg/ffbuild/config.mak','ffmpeg-config.mak'),@('ffmpeg/config.h','ffmpeg-config.h'),@('source/build/compile_commands.json','compile_commands.json'),@('source/build/CMakeCache.txt','CMakeCache.txt'))) {
+          foreach ($entry in @(@('ffmpeg/ffbuild/config.log','ffmpeg-config.log'),@('ffmpeg/ffbuild/config.mak','ffmpeg-config.mak'),@('ffmpeg/config.h','ffmpeg-config.h'),@('source/build/compile_commands.json','compile_commands.json'),@('source/build/CMakeCache.txt','CMakeCache.txt'),@('source/build/decord.map','decord-link-map.txt'))) {
             if (Test-Path $entry[0]) { Copy-Item $entry[0] "$env:REPORTS/$($entry[1])" }
           }
           # Never upload executable, wheel, DLL, source fixture or binary archives.

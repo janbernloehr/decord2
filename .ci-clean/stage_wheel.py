@@ -24,6 +24,10 @@ for component, base in [('decord', source), ('dlpack', source/'3rdparty/dlpack')
         for p in base.glob(pattern):
             if p.is_file():
                 shutil.copy2(p, dest / p.name)
+# Retain IJG attribution and full original copyright conditions (LICENSE.md:68-73).
+for name in ('jfdctfst.c', 'jfdctint_template.c', 'jrevdct.c'):
+    shutil.copy2(ffmpeg/'libavcodec'/name, notice/'ffmpeg'/name)
+(notice/'ffmpeg'/'IJG-NOTICE.txt').write_text('This software is based in part on the work of the Independent JPEG Group.\nThe three retained IJG-derived source files are unmodified.\n', encoding='utf8')
 for name in ['clean-native.yml']:
     shutil.copy2(harness/'.github/workflows'/name, notice/name)
 shutil.copy2(harness/'.ci-clean/BUILD-NOTES.md', notice/'BUILD-NOTES.md')
