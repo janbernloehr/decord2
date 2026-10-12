@@ -12,6 +12,7 @@ jobs:
       run:
         shell: pwsh
     env:
+      PYTHONDONTWRITEBYTECODE: '1'
       TEST_PACKAGE: decord2
       TEST_VERSION: 3.4.0+cleanlgpl.1
       DECORD_LOCAL_VERSION_SUFFIX: cleanlgpl.1
@@ -136,7 +137,7 @@ jobs:
             if (Test-Path $entry[0]) { Copy-Item $entry[0] "$env:REPORTS/$($entry[1])" }
           }
           # Never upload executable, wheel, DLL, source fixture or binary archives.
-          Get-ChildItem $env:REPORTS -Recurse -File | Where-Object { $_.Extension -in @('.mp4','.exe','.dll','.whl','.lib','.obj','.zip','.xz') } | Remove-Item
+          Get-ChildItem $env:REPORTS -Recurse -File | Where-Object { $_.Extension -in @('.mp4','.exe','.dll','.whl','.lib','.obj','.zip','.xz','.pyc','.pyo') } | Remove-Item
       - uses: actions/upload-artifact@v4
         if: always()
         with:
